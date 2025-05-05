@@ -1,171 +1,175 @@
+// UDP-server voor "Wie is het dichtste?" spel
+// Elke speler stuurt een gok (getal tussen 0–99) in ASCII
+// De server duidt enkel de dichtste gok aan als winnaar na een time-out
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <unistd.h> // voor de sleep functie
-#define OSInit() WSADATA wsaData; WSAStartup( MAKEWORD( 2, 0 ), &wsaData );
-#define OSCleanup() WSACleanup();
-#define perror(string) fprintf( stderr, string ": WSA errno = %d\n", WSAGetLastError() )
+#include <unistd.h>
+#define OSInit() WSADATA wsaData; WSAStartup(MAKEWORD(2, 0), &wsaData)
+#define OSCleanup() WSACleanup()
+#define perror(msg) fprintf(stderr, msg ": WSA errno = %d\n", WSAGetLastError())
 #else
 #include <sys/socket.h>
-#include <sys/types.h>
-#include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <errno.h>
 #include <unistd.h>
+#include <errno.h>
 #define OSInit()
 #define OSCleanup()
 #endif
 
-// Functie die een willekeurig getal genereert tussen 0 en 99
-int generate_random_number() {
-    srand(time(NULL)); // Initialiseer de willekeurige getalgenerator met de huidige tijd
-    return rand() % 100; // Genereer een willekeurig getal tussen 0 en 99
-}
+#define PORT "24042"
+#define MAX_BUFFER 1000
 
-// Functie om de gok van de speler te vergelijken met het juiste getal
-void compare_guess_with_number(int guess, int number_to_guess, int client_socket, struct sockaddr *client_internet_address, socklen_t client_internet_address_length) {
-    if (guess == number_to_guess) {
-        printf("Je gok is correct! Je hebt gewonnen!\n");
-        sendto(client_socket, "Je hebt gewonnen!", strlen("Je hebt gewonnen!"), 0, client_internet_address, client_internet_address_length); // Stuur "Je hebt gewonnen!" naar de speler
-    } else {
-        printf("Je gok is fout! Het juiste getal was: %d\n", number_to_guess);
-        sendto(client_socket, "Je hebt verloren. Het juiste getal was: ", strlen("Je hebt verloren. Het juiste getal was: "), 0, client_internet_address, client_internet_address_length); // Stuur bericht met het juiste getal
-    }
-}
+// Vraag 1: UDP SOCKETS correct
+int create_udp_socket() {
+    struct addrinfo hints, *res;
+    int sockfd;
 
-// Functie om de server te initialiseren
-int initialization();
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;        // IPv4
+    hints.ai_socktype = SOCK_DGRAM;   // UDP
+    hints.ai_flags = AI_PASSIVE;      // Voor server
 
-// Functie die het spel uitvoert
-void execution(int internet_socket);
-
-// Functie om de server resources op te ruimen
-void cleanup(int internet_socket);
-
-// Hoofdfunctie van het programma
-int main(int argc, char *argv[]) {
-    OSInit(); // Initialiseer Windows sockets als je Windows gebruikt
-
-    int internet_socket = initialization(); // Initialiseer het netwerk en maak een socket
-
-    while (1) {
-        execution(internet_socket); // Voer het spel uit in een lus (voor meerdere rondes)
-    }
-
-    cleanup(internet_socket); // Ruim de server resources op
-
-    OSCleanup(); // Maak Windows sockets schoon (indien nodig)
-
-    return 0;
-}
-
-// Initialisatie van de server, maakt de socket aan
-int initialization() {
-    struct addrinfo internet_address_setup; 
-    struct addrinfo *internet_address_result;
-    memset(&internet_address_setup, 0, sizeof internet_address_setup); // Zet alle instellingen op nul
-
-    internet_address_setup.ai_family = AF_UNSPEC; // Gebruik het juiste adresfamilie (IPv4 of IPv6)
-    internet_address_setup.ai_socktype = SOCK_DGRAM; // Gebruik UDP (datagram socket)
-    internet_address_setup.ai_flags = AI_PASSIVE; // Voor een server die bindt aan alle interfaces
-
-    int getaddrinfo_return = getaddrinfo(NULL, "24042", &internet_address_setup, &internet_address_result); // Verkrijg adresinfo voor de server
-    if (getaddrinfo_return != 0) {
-        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(getaddrinfo_return)); // Fout bij verkrijgen van adresinfo
+    if (getaddrinfo(NULL, PORT, &hints, &res) != 0) {
+        perror("getaddrinfo");
         exit(1);
     }
 
-    int internet_socket = -1;
-    struct addrinfo *internet_address_result_iterator = internet_address_result;
-    while (internet_address_result_iterator != NULL) {
-        internet_socket = socket(internet_address_result_iterator->ai_family, internet_address_result_iterator->ai_socktype, internet_address_result_iterator->ai_protocol); // Maak de socket aan
-        if (internet_socket == -1) {
-            perror("socket");
-        } else {
-            int bind_return = bind(internet_socket, internet_address_result_iterator->ai_addr, internet_address_result_iterator->ai_addrlen); // Bind de socket aan een poort
-            if (bind_return == -1) {
-                close(internet_socket); // Sluit de socket als binden mislukt
-                perror("bind");
-            } else {
-                break; // Als binden succesvol is, breek de lus
-            }
-        }
-        internet_address_result_iterator = internet_address_result_iterator->ai_next;
+    sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (sockfd < 0) {
+        perror("socket");
+        exit(1);
     }
 
-    freeaddrinfo(internet_address_result); // Maak de geheugenruimte van de adresinfo vrij
-
-    if (internet_socket == -1) {
-        fprintf(stderr, "socket: geen geldige socket gevonden\n");
-        exit(2); // Stop het programma als er geen geldige socket is
+    if (bind(sockfd, res->ai_addr, res->ai_addrlen) < 0) {
+        perror("bind");
+        close(sockfd);
+        exit(1);
     }
 
-    return internet_socket; // Retourneer de gemaakte socket
+    freeaddrinfo(res);
+    return sockfd;
 }
 
-// De uitvoer van het spel (de ronde)
-void execution(int internet_socket) {
-    int number_to_guess = generate_random_number(); // Genereer een willekeurig getal voor deze ronde
-    printf("Het te raden getal is: %d\n", number_to_guess);
+// Vraag 2: willekeurig getal tussen 0 en 99
+int generate_secret_number() {
+    return rand() % 100;
+}
 
-    struct timeval timeout; 
-    timeout.tv_sec = 16; // Begin met een timeout van 16 seconden
-    timeout.tv_usec = 0;
-    if (setsockopt(internet_socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) { // Stel de timeout in
-        perror("setsockopt");
+// Vraag 6: late messages – stuur "You lost!" naar alle late berichten
+void handle_late_message(int sockfd, struct sockaddr *client_addr, socklen_t addrlen) {
+    char message[] = "You lost!";
+    sendto(sockfd, message, strlen(message), 0, client_addr, addrlen);
+}
+
+// Vraag 3, 4 en 5
+void play_round(int sockfd) {
+    int secret = generate_secret_number();
+    printf("Nieuw getal: %d\n", secret);  // Voor debug
+
+    struct sockaddr_storage winner_addr;
+    socklen_t winner_addrlen = sizeof(winner_addr);
+    int closest_guess = -1;
+    int closest_diff = 100;
+
+    int round_done = 0;
+    int timeout_sec = 16;
+
+    while (!round_done && timeout_sec > 0) {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds);
+
+        struct timeval timeout;
+        timeout.tv_sec = timeout_sec;
+        timeout.tv_usec = 0;
+
+        int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+
+        if (activity < 0) {
+            perror("select");
+            break;
+        } else if (activity == 0) {
+            // Time-out
+            if (closest_guess != -1) {
+                char msg[] = "You won!";
+                sendto(sockfd, msg, strlen(msg), 0, (struct sockaddr*)&winner_addr, winner_addrlen);
+                printf("Winnaar verstuurd!\n");
+            }
+            round_done = 1;
+        } else {
+            // Data beschikbaar
+            char buffer[MAX_BUFFER];
+            struct sockaddr_storage client_addr;
+            socklen_t addrlen = sizeof(client_addr);
+            int bytes = recvfrom(sockfd, buffer, MAX_BUFFER - 1, 0, (struct sockaddr*)&client_addr, &addrlen);
+
+            if (bytes < 0) {
+                perror("recvfrom");
+                continue;
+            }
+
+            buffer[bytes] = '\0';
+            int guess = atoi(buffer);
+            printf("Gok ontvangen: %d\n", guess);
+
+            int diff = abs(secret - guess);
+            if (diff < closest_diff) {
+                closest_diff = diff;
+                closest_guess = guess;
+                memcpy(&winner_addr, &client_addr, addrlen);
+                winner_addrlen = addrlen;
+            }
+
+            // Vraag 4: halveer de time-out
+            timeout_sec /= 2;
+        }
     }
 
-    int closest_guess = -1; // Variabele voor de dichtstbijzijnde gok
-    int closest_distance = 100; // Begin met een grote afstand (meer dan 99)
-    int winner_selected = 0; // Houd bij of er al een winnaar is geselecteerd
+    // Vraag 6: late berichten opvangen
+    struct timeval grace;
+    grace.tv_sec = 2;
+    grace.tv_usec = 0;
 
-    while (!winner_selected) {
-        int number_of_bytes_received = 0;
-        char buffer[1000];
-        struct sockaddr_storage client_internet_address;
-        socklen_t client_internet_address_length = sizeof(client_internet_address);
-        number_of_bytes_received = recvfrom(internet_socket, buffer, (sizeof buffer) - 1, 0, (struct sockaddr *)&client_internet_address, &client_internet_address_length); // Ontvang een gok van de speler
-        if (number_of_bytes_received == -1) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) { // Timeout is opgetreden
-                if (closest_guess != -1) { // Als er al een winnaar is geselecteerd
-                    printf("Je hebt gewonnen?\n");
-                    sendto(internet_socket, "Je hebt gewonnen!", strlen("Je hebt gewonnen!"), 0, (struct sockaddr *)&client_internet_address, client_internet_address_length);
-                    winner_selected = 1; // Winnaar geselecteerd
-                } else {
-                    printf("Je hebt verloren?\n");
-                    sendto(internet_socket, "Je hebt verloren. Het juiste getal was: ", strlen("Je hebt verloren. Het juiste getal was: "), 0, (struct sockaddr *)&client_internet_address, client_internet_address_length);
-                    break; // Stop de ronde
-                }
-            } else {
-                perror("recvfrom"); // Er ging iets mis bij het ontvangen van een bericht
-            }
-        } else {
-            buffer[number_of_bytes_received] = '\0'; // Zet het ontvangen bericht om naar een string
-            int client_guess = atoi(buffer); // Zet de ontvangen gok om naar een getal
-            printf("Ontvangen gok van client: %d\n", client_guess);
-            int distance = abs(client_guess - number_to_guess); // Bereken de afstand tot het juiste getal
-            if (distance < closest_distance) { // Als deze gok dichterbij is dan de vorige
-                closest_guess = client_guess;
-                closest_distance = distance;
-            }
+    fd_set late_fds;
+    FD_ZERO(&late_fds);
+    FD_SET(sockfd, &late_fds);
 
-            compare_guess_with_number(client_guess, number_to_guess, internet_socket, (struct sockaddr *)&client_internet_address, client_internet_address_length); // Vergelijk de gok met het juiste getal
+    while (select(sockfd + 1, &late_fds, NULL, NULL, &grace) > 0) {
+        char buffer[MAX_BUFFER];
+        struct sockaddr_storage late_addr;
+        socklen_t addrlen = sizeof(late_addr);
+        int bytes = recvfrom(sockfd, buffer, MAX_BUFFER - 1, 0, (struct sockaddr*)&late_addr, &addrlen);
 
-            timeout.tv_sec /= 2; // Halveer de timeout
-            if (setsockopt(internet_socket, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) { // Stel de nieuwe timeout in
-                perror("setsockopt");
-            }
+        if (bytes > 0) {
+            handle_late_message(sockfd, (struct sockaddr*)&late_addr, addrlen);
         }
+
+        FD_ZERO(&late_fds);
+        FD_SET(sockfd, &late_fds);
     }
 }
 
-// Ruim de serverbronnen op na het beëindigen van het spel
-void cleanup(int internet_socket) {
-    close(internet_socket); // Sluit de socket af
+// Vraag 8: CONTINUOUS – speel meerdere rondes
+int main() {
+    OSInit();
+    srand(time(NULL));
+
+    int sockfd = create_udp_socket();  // Vraag 1
+
+    while (1) {
+        play_round(sockfd);  // Vraag 8
+        printf("Nieuwe ronde start...\n");
+    }
+
+    close(sockfd);
+    OSCleanup();
+    return 0;
 }
